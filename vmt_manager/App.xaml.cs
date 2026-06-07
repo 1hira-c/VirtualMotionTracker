@@ -17,11 +17,51 @@ namespace vmt_manager
     /// </summary>
     public partial class App : Application
     {
+        // Phase 15.5 #1 fix: SteamVR の auto-launch + ユーザ手動起動の同時発生で
+        //  Manager が二重起動するケースを防ぐ named mutex。インストール毎に分離したいが
+        //  app_key と揃えるのが分かりやすいので同じ識別子を使う。
+        private const string SingleInstanceMutexName = "Global\\1hira.fitra.vmt_manager.singleinstance";
+        private Mutex singleInstanceMutex;
+
         public App()
         {
             this.DispatcherUnhandledException += App_DispatcherUnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+        }
+
+        protected override void OnStartup(StartupEventArgs e)
+        {
+            //コマンドラインモード (install/uninstall/setroommatrix) は完了して即終了する
+            //一回操作なので、共存しても害は少ない (mutex を取らずに通す)。対話起動のみ排他。
+            bool isInteractive = (e.Args == null || e.Args.Length == 0);
+
+            if (isInteractive)
+            {
+                bool createdNew;
+                singleInstanceMutex = new Mutex(true, SingleInstanceMutexName, out createdNew);
+                if (!createdNew)
+                {
+                    //既に別プロセスの Manager が走っている → 黙って終了
+                    //(ダイアログを出すと auto-launch でうるさいので)
+                    singleInstanceMutex = null;
+                    Shutdown(0);
+                    return;
+                }
+            }
+
+            base.OnStartup(e);
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            if (singleInstanceMutex != null)
+            {
+                try { singleInstanceMutex.ReleaseMutex(); } catch { }
+                singleInstanceMutex.Dispose();
+                singleInstanceMutex = null;
+            }
+            base.OnExit(e);
         }
 
         //Thread.Sleep(100)は、入れないとnotepadが起動しないので入れている

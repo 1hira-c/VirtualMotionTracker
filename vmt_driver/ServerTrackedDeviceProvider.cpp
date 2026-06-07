@@ -213,6 +213,9 @@ namespace VMTDriver {
         //起動時自動更新の反映
         TrackedDeviceServerDriver::SetAutoUpdate(Config::GetInstance()->GetAutoPoseUpdateOnStartup());
 
+        //Phase 15.5: 登録ゲートの初期状態を反映。WaitForHmd=true なら Manager の arm 受信まで登録を保留。
+        TrackedDeviceServerDriver::SetRegistrationEnabled(!Config::GetInstance()->GetWaitForHmd());
+
         //通信のオープン
         CommunicationManager::GetInstance()->Open();
 

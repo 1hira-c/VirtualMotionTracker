@@ -228,6 +228,11 @@ namespace VMTDriver {
     //自動更新を有効にするか
     bool TrackedDeviceServerDriver::s_autoUpdate = false;
 
+    //Phase 15.5: 登録ゲート。false の間は RegisterToVRSystem を即 return。
+    //初期 true = 現状互換 (WaitForHmd=false なら最初から登録される)。
+    //WaitForHmd=true の場合は Init() で false に倒し、Manager からの arm で true へ。
+    bool TrackedDeviceServerDriver::s_registrationEnabled = true;
+
     //仮想デバイスのコンストラクタ。(Listから暗黙的にコールされる)
     TrackedDeviceServerDriver::TrackedDeviceServerDriver()
     {
@@ -476,6 +481,13 @@ namespace VMTDriver {
     //(ここではm_propertyContainerの操作はできない。この後にActivateがコールされる)
     void TrackedDeviceServerDriver::RegisterToVRSystem(int type)
     {
+        //Phase 15.5: 登録ゲート。WaitForHmd 中で Manager から arm が来るまでは登録しない。
+        //fitra-cam は 60Hz で送り続けるので、arm 後の次パケットで RegisterToVRSystem が再コールされ登録される。
+        if (!s_registrationEnabled)
+        {
+            return;
+        }
+
         if (!m_alreadyRegistered && !m_registrationInProgress)
         {
             switch (type)
@@ -956,7 +968,16 @@ namespace VMTDriver {
         s_autoUpdate = enable;
     }
 
+    //Phase 15.5: 登録ゲートの開閉 (Manager からの /VMT/Set/RegistrationEnable で呼ばれる)
+    void TrackedDeviceServerDriver::SetRegistrationEnabled(bool enable)
+    {
+        s_registrationEnabled = enable;
+    }
 
+    bool TrackedDeviceServerDriver::GetRegistrationEnabled()
+    {
+        return s_registrationEnabled;
+    }
 
 
     //** OpenVR向け関数群 **
@@ -1013,14 +1034,23 @@ namespace VMTDriver {
         RegisteredDeviceType_String += m_serial.c_str();
         LogIfETrackedPropertyError(VRProperties()->SetStringProperty(m_propertyContainer, Prop_RegisteredDeviceType_String, RegisteredDeviceType_String.c_str()));
 
-        if (m_CompatibleMode && (m_deviceClass == ETrackedDeviceClass::TrackedDeviceClass_Controller)) {
+        const bool isController = m_deviceClass == ETrackedDeviceClass::TrackedDeviceClass_Controller;
+        const bool isGenericTracker = m_deviceClass == ETrackedDeviceClass::TrackedDeviceClass_GenericTracker;
+
+        if (m_CompatibleMode && isController) {
             LogIfETrackedPropertyError(VRProperties()->SetStringProperty(m_propertyContainer, Prop_InputProfilePath_String, "{vmt}/input/vmt_compatible_profile.json")); //Knuckles互換モード
         }
-        else if (m_CompatibleMode && (m_deviceClass == ETrackedDeviceClass::TrackedDeviceClass_GenericTracker)) {
+        else if (m_CompatibleMode && isGenericTracker) {
             LogIfETrackedPropertyError(VRProperties()->SetStringProperty(m_propertyContainer, Prop_InputProfilePath_String, "{htc}/input/vive_tracker_profile.json")); //Tracker互換モード
         }
-        else {
+        else if (isGenericTracker) {
+            LogIfETrackedPropertyError(VRProperties()->SetStringProperty(m_propertyContainer, Prop_InputProfilePath_String, "{vmt}/input/vmt_tracker_profile.json")); //VMTトラッカーモード
+        }
+        else if (isController) {
             LogIfETrackedPropertyError(VRProperties()->SetStringProperty(m_propertyContainer, Prop_InputProfilePath_String, "{vmt}/input/vmt_profile.json")); //VMTモード
+        }
+        else {
+            LogIfETrackedPropertyError(VRProperties()->SetStringProperty(m_propertyContainer, Prop_InputProfilePath_String, "{vmt}/input/vmt_tracker_profile.json")); //VMT非コントローラーモード
         }
         LogIfETrackedPropertyError(VRProperties()->SetBoolProperty(m_propertyContainer, Prop_NeverTracked_Bool, false));
 
@@ -1056,7 +1086,9 @@ namespace VMTDriver {
         LogIfETrackedPropertyError(VRProperties()->SetBoolProperty(m_propertyContainer, Prop_HasVirtualDisplayComponent_Bool, false));
 
         //LogIfETrackedPropertyError(VRProperties()->SetStringProperty(m_propertyContainer, vmt_profile.json, "NO_SETTING")); //設定不可
-        LogIfETrackedPropertyError(VRProperties()->SetInt32Property(m_propertyContainer, Prop_ControllerHandSelectionPriority_Int32, Config::GetInstance()->GetPriority()));
+        if (isController) {
+            LogIfETrackedPropertyError(VRProperties()->SetInt32Property(m_propertyContainer, Prop_ControllerHandSelectionPriority_Int32, Config::GetInstance()->GetPriority()));
+        }
 
         //コントローラロール登録
         if (m_controllerRole == ControllerRole::Left) {

@@ -1,0 +1,17 @@
+{
+	"source": "builtin",
+	"applications": [
+		{
+			"app_key": "1hira.fitra.vmt_manager",
+			"launch_type": "binary",
+			"binary_path_windows": "..\\vmt_manager.exe",
+			"is_dashboard_overlay": true,
+			"strings": {
+				"en_us": {
+					"name": "VMT Manager (fitra)",
+					"description": "Virtual Motion Tracker manager with fitra-cam HMD pose relay and registration gate."
+				}
+			}
+		}
+	]
+}

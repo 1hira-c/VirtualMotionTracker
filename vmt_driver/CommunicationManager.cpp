@@ -161,6 +161,18 @@ namespace VMTDriver {
 		DirectOSC::OSC::GetInstance().GetSocketTx().Send(packet.Data(), packet.Size());
 	}
 
+	//Phase 15.5: 学習済み Jetson (fitra-cam) IP を Manager に通報する
+	void OSCReceiver::SendJetsonAddr(const std::string& ip) {
+		const size_t bufsize = 256;
+		char buf[bufsize]{};
+		osc::OutboundPacketStream packet(buf, bufsize);
+		LogInfo("/VMT/Report/JetsonAddr : %s", ip.c_str());
+		packet << osc::BeginMessage("/VMT/Report/JetsonAddr")
+			<< ip.c_str()
+			<< osc::EndMessage;
+		DirectOSC::OSC::GetInstance().GetSocketTx().Send(packet.Data(), packet.Size());
+	}
+
 	//購読済みデバイス情報を返送する
 	void OSCReceiver::SendSubscribedDevicePose(string serial, float x, float y, float z, float qx, float qy, float qz, float qw) {
 		const size_t bufsize = 8192;
@@ -224,7 +236,23 @@ namespace VMTDriver {
 		try {
 			adr = m.AddressPattern();
 			osc::ReceivedMessageArgumentStream args = m.ArgumentStream();
-			
+
+			//Phase 15.5: 非ループバックの送信元なら Jetson (fitra-cam) として Manager に通報する。
+			//IpEndpointName::address は host byte order (127.x.x.x の最上位バイト==127)。
+			//IP 変化時のみ送出する (Manager 側も冪等化されているが帯域節約)。
+			{
+				const uint32_t addr_h = static_cast<uint32_t>(remoteEndpoint.address);
+				const uint8_t firstOctet = static_cast<uint8_t>((addr_h >> 24) & 0xFF);
+				const bool isLoopback = (firstOctet == 127);
+				const bool isAnyOrInvalid = (firstOctet == 0) || (addr_h == IpEndpointName::ANY_ADDRESS);
+				if (!isLoopback && !isAnyOrInvalid && addr_h != m_lastReportedJetsonIp) {
+					char ipbuf[IpEndpointName::ADDRESS_STRING_LENGTH]{};
+					remoteEndpoint.AddressAsString(ipbuf);
+					OSCReceiver::SendJetsonAddr(std::string(ipbuf));
+					m_lastReportedJetsonIp = addr_h;
+				}
+			}
+
 			//姿勢情報の受信
 			if (adr == "/VMT/Room/Unity")
 			{
@@ -503,6 +531,24 @@ namespace VMTDriver {
 				args >> value >> i >> osc::EndMessage;
 				LogIfDiag("%s : %s %d", adr.c_str(), value, i);
 				DirectOSC::OSC::GetInstance().ReOpen(value, i);
+
+				//Phase 15.5 follow-up: Manager 再起動時 Manager は最初に /VMT/Set/Destination を投げてくる。
+				//Driver は dedup cache に持っている Jetson IP を即時 resend して、新 Manager に UI 更新を促す。
+				//Driver が Jetson IP をまだ学習していない場合 (cache==0) は何もしない。
+				if (m_lastReportedJetsonIp != 0)
+				{
+					IpEndpointName cached(m_lastReportedJetsonIp, 0);
+					char ipbuf[IpEndpointName::ADDRESS_STRING_LENGTH]{};
+					cached.AddressAsString(ipbuf);
+					OSCReceiver::SendJetsonAddr(std::string(ipbuf));
+				}
+			}
+			//Phase 15.5: 登録ゲートの開閉 (Manager が HMD+両コン揃った時点で 1 を送ってくる)
+			else if (adr == "/VMT/Set/RegistrationEnable")
+			{
+				args >> enable >> osc::EndMessage;
+				LogInfo("%s : %d", adr.c_str(), enable);
+				TrackedDeviceServerDriver::SetRegistrationEnabled(enable != 0);
 			}
 			//汎用設定
 			else if (adr == "/VMT/Config")

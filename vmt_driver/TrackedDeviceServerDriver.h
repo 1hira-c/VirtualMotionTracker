@@ -150,6 +150,9 @@ namespace VMTDriver {
         bool m_poweron{ false };
 
         static bool s_autoUpdate;
+        // Phase 15.5: false 中は RegisterToVRSystem が即 return する。
+        // 初期値は Init で !WaitForHmd を反映、Manager の /VMT/Set/RegistrationEnable で更新。
+        static bool s_registrationEnabled;
     public:
         //内部向け
         TrackedDeviceServerDriver();
@@ -188,6 +191,8 @@ namespace VMTDriver {
         void ProcessEvent(VREvent_t &VREvent);
 
         static void SetAutoUpdate(bool enable);
+        static void SetRegistrationEnabled(bool enable);
+        static bool GetRegistrationEnabled();
 
         //OpenVR向け
         virtual EVRInitError Activate(uint32_t unObjectId) override;

@@ -22,7 +22,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Text;
 using System.Reflection;
 using System.Threading;
@@ -62,6 +64,25 @@ namespace vmt_manager
         bool autosetup = false;
 
         Action FixItAction = null;
+
+        // Phase 15.5: HMD pose relay to fitra-cam (Jetson) + registration arm.
+        const string AutoLaunchAppKey = "1hira.fitra.vmt_manager";
+        const int JetsonHmdListenPort = 39571;
+        private DispatcherTimer hmdPoseTimer;
+        private OscSender jetsonSender;
+        private string lastJetsonIp = null;
+        private bool registrationArmed = false;
+        private readonly Stopwatch hmdPoseStopwatch = Stopwatch.StartNew();
+
+        // Phase 15.5 #2 fix: SteamVR が後から起動した場合のためのリトライ初期化用
+        private DispatcherTimer openVRRetryTimer;
+
+        // Phase 15.5 #1 fix: dashboard overlay 実体。is_dashboard_overlay=true で
+        //  manifest 宣言した分は SteamVR が枠を予約するので、対応する実 overlay を
+        //  作って phantom 化を防ぐ。失敗しても本体機能には影響しない (best-effort)。
+        const string DashboardOverlayKey = "1hira.fitra.vmt_manager.dashboard";
+        private ulong dashboardOverlayMain = 0;
+        private ulong dashboardOverlayThumb = 0;
 
         public MainWindow()
         {
@@ -140,16 +161,101 @@ namespace vmt_manager
                 osc.Send(new OscMessage("/VMT/Set/Destination", "127.0.0.1", 39571));
 
                 util = new EasyOpenVRUtil();
-                if (!util.StartOpenVR())
+
+                string[] cmdArgs = System.Environment.GetCommandLineArgs();
+                bool interactive = (cmdArgs.Length <= 1);
+
+                //Phase 15.5 #2 fix: 対話起動では vrserver プロセスが居る時だけ Init を呼ぶ。
+                //OpenVR.Init は SteamVR が落ちてると自動で再起動を促してしまうため、
+                //ユーザが意図的に SteamVR を落とした状態を尊重する。コマンドラインモードは
+                //SteamVR を能動的に上げてでも処理を完遂したいので従来通り Init を試す。
+                if (interactive && !IsSteamVRRunning())
                 {
-                    TopErrorMessage("Steam VR not ready. Maybe not ready for HMD or Tracking system.\nStream VRが利用できません。HMDやトラッキングシステムが利用できない状態の可能性があります。\n\nPlease enable Null driver If you want to use without HMD. \nHMDなしで利用したい場合は、Null driverを有効にして再起動してください。", true, () => {
-                        EnableNullHMDDriverButton(null, null);
-                    });
-                    //Close();
-                    //タイマー起動してはいけない
+                    TopWarningMessage("Waiting for SteamVR... (auto-retry every 2s)\nSteamVR起動待機中... (2秒ごとに自動リトライ)", true);
+                    StartOpenVRRetryTimer();
                     return;
                 }
 
+                if (!util.StartOpenVR())
+                {
+                    if (!interactive)
+                    {
+                        //コマンドラインモード (install/uninstall/setroommatrix) は SteamVR が必須なので即座に失敗扱い
+                        TopErrorMessage("Steam VR not ready. Maybe not ready for HMD or Tracking system.\nStream VRが利用できません。HMDやトラッキングシステムが利用できない状態の可能性があります。\n\nPlease enable Null driver If you want to use without HMD. \nHMDなしで利用したい場合は、Null driverを有効にして再起動してください。", true, () => {
+                            EnableNullHMDDriverButton(null, null);
+                        });
+                        return;
+                    }
+
+                    //対話起動: vrserver は居たが Init に失敗 (起動直後で IPC まだなど) → リトライ
+                    TopWarningMessage("Waiting for SteamVR... (auto-retry every 2s)\nSteamVR起動待機中... (2秒ごとに自動リトライ)", true);
+                    StartOpenVRRetryTimer();
+                    return;
+                }
+
+                CompleteInitializationAfterOpenVR();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message + "\n" + ex.StackTrace, title);
+                Close(ex);
+                return;
+            }
+        }
+
+        //Phase 15.5 #2 fix: vrserver プロセスの存在だけを passive にポーリングする。
+        //OpenVR.Init を呼ぶと SteamVR が自動起動してしまうので、プロセスが居ない間は
+        //完全に静観する (= ユーザが意図的に閉じた SteamVR を勝手に蘇生させない)。
+        private static bool IsSteamVRRunning()
+        {
+            try
+            {
+                return System.Diagnostics.Process.GetProcessesByName("vrserver").Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void StartOpenVRRetryTimer()
+        {
+            if (openVRRetryTimer != null)
+            {
+                openVRRetryTimer.Stop();
+            }
+            openVRRetryTimer = new DispatcherTimer();
+            openVRRetryTimer.Interval = TimeSpan.FromSeconds(2);
+            openVRRetryTimer.Tick += OpenVRRetryTick;
+            openVRRetryTimer.Start();
+        }
+
+        //Phase 15.5 #2 fix: 2秒ごとに vrserver の存在を確認し、見つかった時だけ Init を呼ぶ。
+        //成功したら本来の初期化を継続する。
+        private void OpenVRRetryTick(object sender, EventArgs e)
+        {
+            try
+            {
+                if (util == null) return;
+                if (!IsSteamVRRunning()) return;       // vrserver 不在 → 静観
+                if (!util.StartOpenVR()) return;       // 居るが Init 失敗 → 次の tick で再試行
+
+                openVRRetryTimer.Stop();
+                openVRRetryTimer = null;
+                TopErrorDockPanel.Visibility = Visibility.Collapsed;
+                CompleteInitializationAfterOpenVR();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("# OpenVRRetryTick: " + ex);
+            }
+        }
+
+        //Phase 15.5 #2 fix: util.StartOpenVR() 成功後の残りの初期化を一箇所にまとめた
+        private void CompleteInitializationAfterOpenVR()
+        {
+            try
+            {
                 if (Environment.Is64BitOperatingSystem == false)
                 {
                     TopErrorMessage("VMT works 64bit OS only.\n VMTは64bit OSでのみ動作します。");
@@ -163,6 +269,12 @@ namespace vmt_manager
                 dispatcherTimer.Interval = new TimeSpan(0, 0, 0, 0, 100);
                 dispatcherTimer.Tick += new EventHandler(GenericTimer);
                 dispatcherTimer.Start();
+
+                //Phase 15.5: 60Hz HMD pose relay + registration arm latch
+                hmdPoseTimer = new DispatcherTimer();
+                hmdPoseTimer.Interval = TimeSpan.FromMilliseconds(16);
+                hmdPoseTimer.Tick += new EventHandler(HmdPoseTick);
+                hmdPoseTimer.Start();
 
                 //セーフモードチェック
                 EVRSettingsError eVRSettingsError = EVRSettingsError.None;
@@ -235,6 +347,13 @@ namespace vmt_manager
                             return;
                         }
                     });
+                }
+                else
+                {
+                    //Phase 15.5: SteamVR auto-launch (interactive mode only)
+                    TryRegisterAutoLaunch();
+                    //Phase 15.5 #1 fix: manifest の is_dashboard_overlay=true 宣言を裏付ける実 overlay を貼る
+                    CreateDashboardOverlay();
                 }
             }
             catch (Exception ex)
@@ -382,6 +501,11 @@ namespace vmt_manager
                         });
                     }
                 }
+                else if (message.Address == "/VMT/Report/JetsonAddr")
+                {
+                    string ip = (string)message[0];
+                    this.Dispatcher.Invoke(() => UpdateJetsonSender(ip));
+                }
                 else
                 {
                     //Do noting
@@ -512,9 +636,10 @@ namespace vmt_manager
             }
             catch (Exception ex)
             {
-                dispatcherTimer.Stop(); //タイマー停止
-                MessageBox.Show(ex.Message + "\n" + ex.StackTrace, title);
-                Close(ex);
+                //Phase 15.5 #2 fix: SteamVR が落ちた瞬間のエラーは window を閉じず、
+                //OpenVR 再初期化ループへ移行する (Manager は常駐し続ける想定)。
+                Console.WriteLine("# GenericTimer error (probably SteamVR shutdown): " + ex);
+                BeginOpenVRRestart();
                 return;
             }
         }
@@ -523,9 +648,253 @@ namespace vmt_manager
         {
             //クローズ
             Console.WriteLine("Closed");
+            openVRRetryTimer?.Stop();
+            hmdPoseTimer?.Stop();
+            DestroyDashboardOverlay();
+            try { jetsonSender?.Close(); } catch { }
             if (osc != null)
             {
                 osc.Dispose();
+            }
+        }
+
+        // Phase 15.5: 60Hz tick — relay HMD pose to fitra-cam (Jetson) and arm
+        // the Driver's registration gate once HMD + both controllers are ready.
+        private void HmdPoseTick(object sender, EventArgs e)
+        {
+            try
+            {
+                if (util == null) return;
+
+                // Phase 15.5 #2: SteamVR が終了した場合、VREvent_Quit を拾って
+                // openvr ハンドルを破棄し、リトライ初期化ループに戻す。
+                bool quit = false;
+                try { quit = util.ProcessEventAndCheckQuit(); }
+                catch { quit = true; } // openvr 側が既に死亡している場合も同じ扱い
+                if (quit)
+                {
+                    BeginOpenVRRestart();
+                    return;
+                }
+
+                // 1) Arm latch — send /VMT/Set/RegistrationEnable once when ready.
+                if (!registrationArmed && util.IsHmdAndBothControllersReady())
+                {
+                    osc?.Send(new OscMessage("/VMT/Set/RegistrationEnable", 1));
+                    registrationArmed = true;
+                    if (RegistrationStateTextBlock != null)
+                    {
+                        RegistrationStateTextBlock.Text = "ARMED";
+                        RegistrationStateTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(0, 200, 0));
+                    }
+                }
+
+                // 2) HMD pose relay — skip until Jetson address is learned.
+                if (jetsonSender == null) return;
+
+                var t = util.GetHMDTransform();
+                int valid = (t != null) ? 1 : 0;
+                float ts = (float)(hmdPoseStopwatch.Elapsed.TotalSeconds);
+                float x = 0f, y = 0f, z = 0f, qx = 0f, qy = 0f, qz = 0f, qw = 0f;
+                if (t != null)
+                {
+                    x = t.position.X; y = t.position.Y; z = t.position.Z;
+                    qx = t.rotation.X; qy = t.rotation.Y; qz = t.rotation.Z; qw = t.rotation.W;
+                }
+                jetsonSender.Send(new OscMessage("/fitra/hmd_pose",
+                    valid, ts, x, y, z, qx, qy, qz, qw));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("# HmdPoseTick : " + ex);
+            }
+        }
+
+        // Phase 15.5 #2 fix: SteamVR が落ちた / VREvent_Quit を受信した時、
+        // OpenVR ハンドルを clean shutdown して、SteamVR の次回起動を待つリトライ
+        // タイマーを再スタートする。Manager プロセスは終了させない。
+        private void BeginOpenVRRestart()
+        {
+            Console.WriteLine("# OpenVR Quit detected — restarting init loop");
+            dispatcherTimer?.Stop();
+            hmdPoseTimer?.Stop();
+            dispatcherTimer = null;
+            hmdPoseTimer = null;
+
+            // Driver は SteamVR 再起動毎に新規ロードされ s_registrationEnabled が
+            // !WaitForHmd で初期化されるので、Manager 側 latch を解除して再 arm 可能にする。
+            registrationArmed = false;
+            if (RegistrationStateTextBlock != null)
+            {
+                RegistrationStateTextBlock.Text = "WAITING";
+                RegistrationStateTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255));
+            }
+
+            DestroyDashboardOverlay();
+            try { OpenVR.Shutdown(); } catch { }
+            util = new EasyOpenVRUtil();
+            ControlDock.IsEnabled = false;
+            DriverVersion.Text = " - ";
+            DriverVersion.Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255));
+
+            TopWarningMessage("Waiting for SteamVR... (auto-retry every 2s)\nSteamVR起動待機中... (2秒ごとに自動リトライ)", true);
+            StartOpenVRRetryTimer();
+        }
+
+        // Phase 15.5 #1 fix: manifest が is_dashboard_overlay=true を宣言した枠に対し
+        //  実体の overlay を貼ってダッシュボード枠予約の phantom 化を防ぐ。
+        //  VMTlogo.png を一時ファイルに展開して SetOverlayFromFile に渡す
+        //  (PNG は WPF Resource として assembly 内に埋め込みされていてパスがないため)。
+        private void CreateDashboardOverlay()
+        {
+            if (dashboardOverlayMain != 0 || dashboardOverlayThumb != 0) return;
+            try
+            {
+                var ovl = OpenVR.Overlay;
+                if (ovl == null) return;
+
+                var err = ovl.CreateDashboardOverlay(DashboardOverlayKey, "VMT Manager (fitra)",
+                    ref dashboardOverlayMain, ref dashboardOverlayThumb);
+                if (err != EVROverlayError.None)
+                {
+                    Console.WriteLine("# CreateDashboardOverlay error: " + err);
+                    dashboardOverlayMain = 0;
+                    dashboardOverlayThumb = 0;
+                    return;
+                }
+
+                string texturePath = ExtractOverlayTexture();
+                if (texturePath != null)
+                {
+                    ovl.SetOverlayFromFile(dashboardOverlayMain, texturePath);
+                    ovl.SetOverlayFromFile(dashboardOverlayThumb, texturePath);
+                }
+                ovl.SetOverlayWidthInMeters(dashboardOverlayMain, 0.5f);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("# CreateDashboardOverlay: " + ex);
+            }
+        }
+
+        private void DestroyDashboardOverlay()
+        {
+            try
+            {
+                var ovl = OpenVR.Overlay;
+                if (ovl != null)
+                {
+                    if (dashboardOverlayMain != 0) ovl.DestroyOverlay(dashboardOverlayMain);
+                    if (dashboardOverlayThumb != 0) ovl.DestroyOverlay(dashboardOverlayThumb);
+                }
+            }
+            catch { }
+            dashboardOverlayMain = 0;
+            dashboardOverlayThumb = 0;
+        }
+
+        //assembly 内 Resource (Resources/VMTlogo.png) を一時ファイルに展開してそのパスを返す。
+        //SetOverlayFromFile が実ファイルパスを要求するため。失敗時は null。
+        private static string ExtractOverlayTexture()
+        {
+            try
+            {
+                string tmp = Path.Combine(Path.GetTempPath(), "vmt_manager_overlay.png");
+                if (!File.Exists(tmp))
+                {
+                    var uri = new Uri("/vmt_manager;component/Resources/VMTlogo.png", UriKind.Relative);
+                    var info = Application.GetResourceStream(uri);
+                    if (info == null) return null;
+                    using (var src = info.Stream)
+                    using (var dst = File.Create(tmp))
+                    {
+                        src.CopyTo(dst);
+                    }
+                }
+                return tmp;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("# ExtractOverlayTexture: " + ex);
+                return null;
+            }
+        }
+
+        // Phase 15.5: rebuild the Jetson-bound OscSender when Driver reports a
+        // new fitra-cam source address (idempotent on repeat IPs).
+        private void UpdateJetsonSender(string ip)
+        {
+            if (string.IsNullOrWhiteSpace(ip)) return;
+            if (!IPAddress.TryParse(ip, out var addr))
+            {
+                Console.WriteLine("# UpdateJetsonSender: invalid IP '" + ip + "'");
+                return;
+            }
+            if (ip == lastJetsonIp && jetsonSender != null) return;
+
+            try { jetsonSender?.Close(); } catch { }
+            jetsonSender = null;
+
+            try
+            {
+                var s = new OscSender(addr, 0, JetsonHmdListenPort);
+                s.Connect();
+                jetsonSender = s;
+                lastJetsonIp = ip;
+                if (JetsonAddrTextBlock != null)
+                {
+                    JetsonAddrTextBlock.Text = ip + ":" + JetsonHmdListenPort;
+                    JetsonAddrTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(0, 200, 0));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("# UpdateJetsonSender: failed to open sender to " + ip + " : " + ex);
+            }
+        }
+
+        // Phase 15.5: register the manager's .vrmanifest with SteamVR so the
+        // overlay is launched alongside SteamVR (fail-safe + best-effort).
+        private void TryRegisterAutoLaunch()
+        {
+            try
+            {
+                string manifestPath = Path.GetFullPath(Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory, "Resources", "vmt_manager.vrmanifest"));
+                if (!File.Exists(manifestPath))
+                {
+                    Console.WriteLine("# TryRegisterAutoLaunch: manifest not found at " + manifestPath);
+                    return;
+                }
+                var apps = OpenVR.Applications;
+                if (apps == null) return;
+
+                // Phase 15.5: 古い manifest 内容 (例: is_dashboard_overlay=true) が
+                // 残っているとダッシュボード枠が予約されたままになるので、毎回
+                // Remove + Add で最新ファイル内容で上書きする。
+                if (apps.IsApplicationInstalled(AutoLaunchAppKey))
+                {
+                    var rmErr = apps.RemoveApplicationManifest(manifestPath);
+                    if (rmErr != EVRApplicationError.None)
+                    {
+                        Console.WriteLine("# RemoveApplicationManifest error (ignored): " + rmErr);
+                    }
+                }
+                var addErr = apps.AddApplicationManifest(manifestPath, false);
+                if (addErr != EVRApplicationError.None)
+                {
+                    Console.WriteLine("# AddApplicationManifest error: " + addErr);
+                    return;
+                }
+                var autoErr = apps.SetApplicationAutoLaunch(AutoLaunchAppKey, true);
+                if (autoErr != EVRApplicationError.None)
+                {
+                    Console.WriteLine("# SetApplicationAutoLaunch error: " + autoErr);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("# TryRegisterAutoLaunch: " + ex);
             }
         }
 
@@ -2180,7 +2549,7 @@ namespace vmt_manager
 
         private void IPAddressChangeButton(object sender, RoutedEventArgs e)
         {
-            try { 
+            try {
                 osc.Dispose();
 
                 osc = new OSC(DriverIPAddressTextBox.Text, int.Parse(ManagerPortTextBox.Text), int.Parse(DriverPortTextBox.Text), OnBundle, OnMessage);
@@ -2197,7 +2566,7 @@ namespace vmt_manager
         {
             RequestRestart();
         }
-        
+
 
         private void RequestRestart()
         {

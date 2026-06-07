@@ -97,6 +97,13 @@ namespace EasyLazyLibrary
             return openvr.GetTrackedDeviceIndexForControllerRole(ETrackedControllerRole.RightHand);
         }
 
+        public bool IsHmdAndBothControllersReady()
+        {
+            return IsDeviceValid(GetHMDIndex())
+                && IsDeviceValid(GetLeftControllerIndex())
+                && IsDeviceValid(GetRightControllerIndex());
+        }
+
         public TrackedDevicePose_t[] GetAllDevicePose()
         {
             if (autoupdate)

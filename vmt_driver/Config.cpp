@@ -149,6 +149,10 @@ namespace VMTDriver {
 		{
 			j["AlwaysCompatible"] = false;
 		}
+		if (!j.contains("WaitForHmd"))
+		{
+			j["WaitForHmd"] = false;
+		}
 		return j;
 	}
 
@@ -216,6 +220,10 @@ namespace VMTDriver {
 			if (j.contains("AlwaysCompatible"))
 			{
 				m_AlwaysCompatible = j["AlwaysCompatible"];
+			}
+			if (j.contains("WaitForHmd"))
+			{
+				m_WaitForHmd = j["WaitForHmd"];
 			}
 			SaveJson(j);
 		}
@@ -371,5 +379,10 @@ namespace VMTDriver {
 	bool Config::GetAlwaysCompatible()
 	{
 		return m_AlwaysCompatible;
+	}
+	//HMD準備完了までVMTデバイス登録を待つかを取得する (Phase 15.5)
+	bool Config::GetWaitForHmd()
+	{
+		return m_WaitForHmd;
 	}
 }

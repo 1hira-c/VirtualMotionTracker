@@ -1,0 +1,21 @@
+{
+  "jsonid": "input_profile",
+  "controller_type": "vmt_tracker",
+  "device_class": "TrackedDeviceClass_GenericTracker",
+  "resource_root": "vmt",
+  "driver_name": "vmt",
+  "input_bindingui_mode": "single_device",
+  "should_show_binding_errors": false,
+  "input_bindingui_left": {
+    "image": "{vmt}/input/binding_image_light.png"
+  },
+  "input_bindingui_right": {
+    "image": "{vmt}/input/binding_image_light.png"
+  },
+  "input_source": {
+    "/pose/raw": {
+      "type": "pose",
+      "binding_image_point": [0, 0]
+    }
+  }
+}

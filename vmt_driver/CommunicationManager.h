@@ -37,9 +37,12 @@ namespace VMTDriver {
 		             double timeoffset,
 		             const char* root_sn = nullptr,
 		             ReferMode_t mode = ReferMode_t::None);
-		void WriteSkeletonBone(int deviceIndex, int boneIndex, 
+		void WriteSkeletonBone(int deviceIndex, int boneIndex,
 			float x, float y, float z,
 			float qx, float qy, float qz, float qw);
+
+		//Phase 15.5: Jetson IP の重複通報抑止用キャッシュ (host byte order, 0=未学習)
+		uint32_t m_lastReportedJetsonIp{ 0 };
 
 		virtual void ProcessMessage(const osc::ReceivedMessage& m, const IpEndpointName& remoteEndpoint) override;
 	public:
@@ -49,6 +52,7 @@ namespace VMTDriver {
 		static void OSCReceiver::SendUnavailable(int code, std::string reason);
 		static void OSCReceiver::SendDevices(string msg);
 		static void OSCReceiver::SendSubscribedDevicePose(string serial, float x, float y, float z, float qx, float qy, float qz, float qw);
+		static void OSCReceiver::SendJetsonAddr(const std::string& ip);
 	};
 
 	class CommunicationManager {

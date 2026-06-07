@@ -163,6 +163,11 @@
   <ItemGroup>
     <Resource Include="Resources\disableStandby.png" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Resources\vmt_manager.vrmanifest">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
     <PostBuildEvent>del "$(TargetDir)*.xml"

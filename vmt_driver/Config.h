@@ -46,6 +46,7 @@ namespace VMTDriver {
 		bool m_DiagLogOnStartup{ false };
 		int m_Priority{ 10 };
 		bool m_AlwaysCompatible{ false };
+		bool m_WaitForHmd{ false };
 
 		json LoadJson();
 		void SaveJson(json j);
@@ -76,5 +77,6 @@ namespace VMTDriver {
 		bool GetDiagLogOnStartup();
 		int GetPriority();
 		bool GetAlwaysCompatible();
+		bool GetWaitForHmd();
 	};
 }
