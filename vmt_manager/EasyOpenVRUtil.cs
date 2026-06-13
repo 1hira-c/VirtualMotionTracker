@@ -121,6 +121,17 @@ namespace EasyLazyLibrary
             return allDevicePoseRaw;
         }
 
+        public TrackedDevicePose_t[] GetAllDevicePoseNoPrediction(ETrackingUniverseOrigin origin = ETrackingUniverseOrigin.TrackingUniverseStanding)
+        {
+            var poses = new TrackedDevicePose_t[OpenVR.k_unMaxTrackedDeviceCount];
+            if (!IsReady())
+            {
+                return poses;
+            }
+            openvr.GetDeviceToAbsoluteTrackingPose(origin, 0.0f, poses);
+            return poses;
+        }
+
         public TrackedDevicePose_t GetDevicePose(uint i)
         {
             if (!IsDeviceValid(i))

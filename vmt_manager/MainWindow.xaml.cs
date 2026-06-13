@@ -25,6 +25,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Numerics;
 using System.Text;
 using System.Reflection;
 using System.Threading;
@@ -65,9 +66,9 @@ namespace vmt_manager
 
         Action FixItAction = null;
 
-        // Phase 15.5: HMD pose relay to fitra-cam (Jetson) + registration arm.
+        // Phase 15.5: tracked pose relay to fitra-cam (Jetson) + registration arm.
         const string AutoLaunchAppKey = "1hira.fitra.vmt_manager";
-        const int JetsonHmdListenPort = 39571;
+        const int JetsonPoseRelayPort = 39571;
         private DispatcherTimer hmdPoseTimer;
         private OscSender jetsonSender;
         private string lastJetsonIp = null;
@@ -658,7 +659,7 @@ namespace vmt_manager
             }
         }
 
-        // Phase 15.5: 60Hz tick — relay HMD pose to fitra-cam (Jetson) and arm
+        // Phase 15.5: 60Hz tick — relay HMD/controller poses to fitra-cam (Jetson) and arm
         // the Driver's registration gate once HMD + both controllers are ready.
         private void HmdPoseTick(object sender, EventArgs e)
         {
@@ -677,8 +678,17 @@ namespace vmt_manager
                     return;
                 }
 
+                var poses = util.GetAllDevicePoseNoPrediction(ETrackingUniverseOrigin.TrackingUniverseStanding);
+                uint hmdIndex = util.GetHMDIndex();
+                uint leftIndex = util.GetLeftControllerIndex();
+                uint rightIndex = util.GetRightControllerIndex();
+                float ts = (float)(hmdPoseStopwatch.Elapsed.TotalSeconds);
+
                 // 1) Arm latch — send /VMT/Set/RegistrationEnable once when ready.
-                if (!registrationArmed && util.IsHmdAndBothControllersReady())
+                if (!registrationArmed
+                    && IsTrackedPoseValid(poses, hmdIndex)
+                    && IsTrackedPoseValid(poses, leftIndex)
+                    && IsTrackedPoseValid(poses, rightIndex))
                 {
                     osc?.Send(new OscMessage("/VMT/Set/RegistrationEnable", 1));
                     registrationArmed = true;
@@ -692,22 +702,76 @@ namespace vmt_manager
                 // 2) HMD pose relay — skip until Jetson address is learned.
                 if (jetsonSender == null) return;
 
-                var t = util.GetHMDTransform();
-                int valid = (t != null) ? 1 : 0;
-                float ts = (float)(hmdPoseStopwatch.Elapsed.TotalSeconds);
-                float x = 0f, y = 0f, z = 0f, qx = 0f, qy = 0f, qz = 0f, qw = 0f;
-                if (t != null)
-                {
-                    x = t.position.X; y = t.position.Y; z = t.position.Z;
-                    qx = t.rotation.X; qy = t.rotation.Y; qz = t.rotation.Z; qw = t.rotation.W;
-                }
-                jetsonSender.Send(new OscMessage("/fitra/hmd_pose",
-                    valid, ts, x, y, z, qx, qy, qz, qw));
+                SendTrackedPose(0, hmdIndex, poses, ts);
+                SendTrackedPose(1, leftIndex, poses, ts);
+                SendTrackedPose(2, rightIndex, poses, ts);
             }
             catch (Exception ex)
             {
                 Console.WriteLine("# HmdPoseTick : " + ex);
             }
+        }
+
+        private void SendTrackedPose(int role, uint deviceIndex, TrackedDevicePose_t[] poses, float timestamp)
+        {
+            int deviceIndexArg = -1;
+            int valid = 0;
+            int trackingResult = 0;
+            float x = 0f, y = 0f, z = 0f, qx = 0f, qy = 0f, qz = 0f, qw = 1f;
+
+            if (deviceIndex != OpenVR.k_unTrackedDeviceIndexInvalid && deviceIndex < (uint)poses.Length)
+            {
+                deviceIndexArg = (int)deviceIndex;
+                var pose = poses[deviceIndex];
+                trackingResult = (int)pose.eTrackingResult;
+
+                if (pose.bDeviceIsConnected && pose.bPoseIsValid)
+                {
+                    var mat = util.HmdMatrix34ToMatrix4x4(pose.mDeviceToAbsoluteTracking);
+                    var rot = Quaternion.CreateFromRotationMatrix(mat);
+                    x = mat.Translation.X;
+                    y = mat.Translation.Y;
+                    z = mat.Translation.Z;
+                    qx = rot.X;
+                    qy = rot.Y;
+                    qz = rot.Z;
+                    qw = rot.W;
+
+                    if (IsFinitePose(x, y, z, qx, qy, qz, qw))
+                    {
+                        valid = 1;
+                    }
+                    else
+                    {
+                        x = y = z = qx = qy = qz = 0f;
+                        qw = 1f;
+                    }
+                }
+            }
+
+            jetsonSender.Send(new OscMessage("/fitra/tracked_pose",
+                role, deviceIndexArg, valid, trackingResult, timestamp,
+                x, y, z, qx, qy, qz, qw));
+        }
+
+        private static bool IsTrackedPoseValid(TrackedDevicePose_t[] poses, uint deviceIndex)
+        {
+            return deviceIndex != OpenVR.k_unTrackedDeviceIndexInvalid
+                && deviceIndex < (uint)poses.Length
+                && poses[deviceIndex].bDeviceIsConnected
+                && poses[deviceIndex].bPoseIsValid;
+        }
+
+        private static bool IsFinitePose(params float[] values)
+        {
+            foreach (float value in values)
+            {
+                if (float.IsNaN(value) || float.IsInfinity(value))
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         // Phase 15.5 #2 fix: SteamVR が落ちた / VREvent_Quit を受信した時、
@@ -837,13 +901,13 @@ namespace vmt_manager
 
             try
             {
-                var s = new OscSender(addr, 0, JetsonHmdListenPort);
+                var s = new OscSender(addr, 0, JetsonPoseRelayPort);
                 s.Connect();
                 jetsonSender = s;
                 lastJetsonIp = ip;
                 if (JetsonAddrTextBlock != null)
                 {
-                    JetsonAddrTextBlock.Text = ip + ":" + JetsonHmdListenPort;
+                    JetsonAddrTextBlock.Text = ip + ":" + JetsonPoseRelayPort;
                     JetsonAddrTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(0, 200, 0));
                 }
             }
