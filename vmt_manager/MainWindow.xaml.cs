@@ -72,8 +72,11 @@ namespace vmt_manager
         private DispatcherTimer hmdPoseTimer;
         private OscSender jetsonSender;
         private string lastJetsonIp = null;
+        private int lastJetsonPort = 0;
         private bool registrationArmed = false;
         private readonly Stopwatch hmdPoseStopwatch = Stopwatch.StartNew();
+        private ZeroconfDiscovery zeroconfDiscovery;
+        private List<DiscoveryPeer> discoveryPeers = new List<DiscoveryPeer>();
 
         // Phase 15.5 #2 fix: SteamVR が後から起動した場合のためのリトライ初期化用
         private DispatcherTimer openVRRetryTimer;
@@ -160,6 +163,7 @@ namespace vmt_manager
                 rnd = new Random();
                 osc = new OSC("127.0.0.1", 39571, 39570, OnBundle, OnMessage);
                 osc.Send(new OscMessage("/VMT/Set/Destination", "127.0.0.1", 39571));
+                StartZeroconfDiscovery();
 
                 util = new EasyOpenVRUtil();
 
@@ -505,7 +509,13 @@ namespace vmt_manager
                 else if (message.Address == "/VMT/Report/JetsonAddr")
                 {
                     string ip = (string)message[0];
-                    this.Dispatcher.Invoke(() => UpdateJetsonSender(ip));
+                    this.Dispatcher.Invoke(() =>
+                    {
+                        if (CanUseDriverJetsonFallback())
+                        {
+                            UpdateJetsonSender(ip, JetsonPoseRelayPort, "driver");
+                        }
+                    });
                 }
                 else
                 {
@@ -651,6 +661,7 @@ namespace vmt_manager
             Console.WriteLine("Closed");
             openVRRetryTimer?.Stop();
             hmdPoseTimer?.Stop();
+            zeroconfDiscovery?.Dispose();
             DestroyDashboardOverlay();
             try { jetsonSender?.Close(); } catch { }
             if (osc != null)
@@ -884,36 +895,185 @@ namespace vmt_manager
             }
         }
 
-        // Phase 15.5: rebuild the Jetson-bound OscSender when Driver reports a
-        // new fitra-cam source address (idempotent on repeat IPs).
-        private void UpdateJetsonSender(string ip)
+        private void StartZeroconfDiscovery()
+        {
+            try
+            {
+                string instanceId = Properties.Settings.Default.DiscoveryInstanceId;
+                if (string.IsNullOrWhiteSpace(instanceId))
+                {
+                    instanceId = "vmt-" + Guid.NewGuid().ToString("N").Substring(0, 16);
+                    Properties.Settings.Default.DiscoveryInstanceId = instanceId;
+                    Properties.Settings.Default.Save();
+                }
+
+                if (PairingTokenTextBox != null)
+                {
+                    PairingTokenTextBox.Text = Properties.Settings.Default.DiscoveryPairingToken ?? "";
+                }
+                if (PinnedPeerIdTextBox != null)
+                {
+                    PinnedPeerIdTextBox.Text = Properties.Settings.Default.DiscoveryPinnedPeerId ?? "";
+                }
+
+                string instanceName = "VMT-" + Environment.MachineName;
+                zeroconfDiscovery = new ZeroconfDiscovery(
+                    instanceId,
+                    instanceName,
+                    Properties.Settings.Default.DiscoveryPairingToken,
+                    Properties.Settings.Default.DiscoveryPinnedPeerId);
+                zeroconfDiscovery.SnapshotChanged += OnDiscoverySnapshot;
+                zeroconfDiscovery.SelectedPeerChanged += OnDiscoverySelectedPeerChanged;
+                zeroconfDiscovery.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("# StartZeroconfDiscovery: " + ex);
+                if (DiscoverySelectedTextBlock != null)
+                {
+                    DiscoverySelectedTextBlock.Text = "discovery failed: " + ex.Message;
+                    DiscoverySelectedTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(200, 0, 0));
+                }
+            }
+        }
+
+        private void OnDiscoverySelectedPeerChanged(DiscoveryPeer peer)
+        {
+            if (peer == null || peer.Address == null)
+            {
+                return;
+            }
+
+            this.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                UpdateJetsonSender(peer.Address.ToString(), peer.OscRecvPort, "discovery");
+            }));
+        }
+
+        private void OnDiscoverySnapshot(DiscoverySnapshot snapshot)
+        {
+            this.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                discoveryPeers = new List<DiscoveryPeer>(snapshot.Peers);
+
+                if (DiscoveryPeersListBox != null)
+                {
+                    int selectedIndex = DiscoveryPeersListBox.SelectedIndex;
+                    DiscoveryPeersListBox.Items.Clear();
+                    foreach (var peer in discoveryPeers)
+                    {
+                        TimeSpan age = snapshot.NowUtc - peer.LastSeenUtc;
+                        bool live = age <= snapshot.PeerTimeout;
+                        string selectedMark = snapshot.SelectedPeer != null && snapshot.SelectedPeer.InstanceId == peer.InstanceId ? "* " : "  ";
+                        string state = live ? "LIVE" : "STALE";
+                        string name = string.IsNullOrWhiteSpace(peer.InstanceName) ? "(unnamed)" : peer.InstanceName;
+                        DiscoveryPeersListBox.Items.Add(string.Format(
+                            "{0}{1} {2} {3}:{4} age={5:0.0}s id={6}",
+                            selectedMark,
+                            state,
+                            name,
+                            peer.Address,
+                            peer.OscRecvPort,
+                            age.TotalSeconds,
+                            peer.InstanceId));
+                    }
+                    if (selectedIndex >= 0 && selectedIndex < DiscoveryPeersListBox.Items.Count)
+                    {
+                        DiscoveryPeersListBox.SelectedIndex = selectedIndex;
+                    }
+                }
+
+                if (DiscoverySelectedTextBlock != null)
+                {
+                    if (snapshot.SelectedPeer == null)
+                    {
+                        DiscoverySelectedTextBlock.Text = "(none)";
+                        DiscoverySelectedTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(120, 120, 120));
+                    }
+                    else
+                    {
+                        DiscoverySelectedTextBlock.Text = string.Format(
+                            "{0}:{1} ({2})",
+                            snapshot.SelectedPeer.Address,
+                            snapshot.SelectedPeer.OscRecvPort,
+                            snapshot.SelectedPeer.InstanceId);
+                        DiscoverySelectedTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(0, 160, 0));
+                    }
+                }
+            }));
+        }
+
+        private bool CanUseDriverJetsonFallback()
+        {
+            if (zeroconfDiscovery != null && zeroconfDiscovery.HasSelectedPeer)
+            {
+                return false;
+            }
+            if (!string.IsNullOrEmpty(Properties.Settings.Default.DiscoveryPairingToken))
+            {
+                return false;
+            }
+            if (!string.IsNullOrEmpty(Properties.Settings.Default.DiscoveryPinnedPeerId))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        // Phase 15.5: rebuild the Jetson-bound OscSender when Driver or discovery
+        // reports a new fitra-cam endpoint (idempotent on repeat endpoints).
+        private void UpdateJetsonSender(string ip, int port, string source)
         {
             if (string.IsNullOrWhiteSpace(ip)) return;
+            if (port <= 0 || port > 65535) return;
             if (!IPAddress.TryParse(ip, out var addr))
             {
                 Console.WriteLine("# UpdateJetsonSender: invalid IP '" + ip + "'");
                 return;
             }
-            if (ip == lastJetsonIp && jetsonSender != null) return;
+            if (ip == lastJetsonIp && port == lastJetsonPort && jetsonSender != null)
+            {
+                if (JetsonAddrTextBlock != null)
+                {
+                    JetsonAddrTextBlock.Text = ip + ":" + port + " (" + source + ")";
+                    JetsonAddrTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(0, 200, 0));
+                }
+                return;
+            }
 
             try { jetsonSender?.Close(); } catch { }
             jetsonSender = null;
 
             try
             {
-                var s = new OscSender(addr, 0, JetsonPoseRelayPort);
+                var s = new OscSender(addr, 0, port);
                 s.Connect();
                 jetsonSender = s;
                 lastJetsonIp = ip;
+                lastJetsonPort = port;
                 if (JetsonAddrTextBlock != null)
                 {
-                    JetsonAddrTextBlock.Text = ip + ":" + JetsonPoseRelayPort;
+                    JetsonAddrTextBlock.Text = ip + ":" + port + " (" + source + ")";
                     JetsonAddrTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(0, 200, 0));
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("# UpdateJetsonSender: failed to open sender to " + ip + " : " + ex);
+                Console.WriteLine("# UpdateJetsonSender: failed to open sender to " + ip + ":" + port + " : " + ex);
+            }
+        }
+
+        private void ClearJetsonSender(string reason)
+        {
+            try { jetsonSender?.Close(); } catch { }
+            jetsonSender = null;
+            lastJetsonIp = null;
+            lastJetsonPort = 0;
+
+            if (JetsonAddrTextBlock != null)
+            {
+                JetsonAddrTextBlock.Text = "(not learned: " + reason + ")";
+                JetsonAddrTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(120, 120, 120));
             }
         }
 
@@ -2608,6 +2768,64 @@ namespace vmt_manager
                 {
                     RequestRestart();
                 }
+            }
+        }
+
+        private void ApplyDiscoveryTokenButton(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string token = PairingTokenTextBox?.Text ?? "";
+                Properties.Settings.Default.DiscoveryPairingToken = token;
+                Properties.Settings.Default.Save();
+                ClearJetsonSender("pairing token changed");
+                zeroconfDiscovery?.SetPairingToken(token);
+                System.Media.SystemSounds.Beep.Play();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void PinSelectedDiscoveryPeerButton(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                int index = DiscoveryPeersListBox?.SelectedIndex ?? -1;
+                if (index < 0 || index >= discoveryPeers.Count)
+                {
+                    MessageBox.Show("No discovery peer selected.", title, MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                string peerId = discoveryPeers[index].InstanceId;
+                PinnedPeerIdTextBox.Text = peerId;
+                Properties.Settings.Default.DiscoveryPinnedPeerId = peerId;
+                Properties.Settings.Default.Save();
+                ClearJetsonSender("pin changed");
+                zeroconfDiscovery?.SetPinnedPeerId(peerId);
+                System.Media.SystemSounds.Beep.Play();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ClearDiscoveryPinButton(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                PinnedPeerIdTextBox.Text = "";
+                Properties.Settings.Default.DiscoveryPinnedPeerId = "";
+                Properties.Settings.Default.Save();
+                zeroconfDiscovery?.SetPinnedPeerId("");
+                System.Media.SystemSounds.Beep.Play();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

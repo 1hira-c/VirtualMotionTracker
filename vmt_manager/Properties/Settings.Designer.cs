@@ -26,5 +26,50 @@ namespace vmt_manager.Properties
                 return defaultInstance;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string DiscoveryInstanceId
+        {
+            get
+            {
+                return ((string)(this["DiscoveryInstanceId"]));
+            }
+            set
+            {
+                this["DiscoveryInstanceId"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string DiscoveryPinnedPeerId
+        {
+            get
+            {
+                return ((string)(this["DiscoveryPinnedPeerId"]));
+            }
+            set
+            {
+                this["DiscoveryPinnedPeerId"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string DiscoveryPairingToken
+        {
+            get
+            {
+                return ((string)(this["DiscoveryPairingToken"]));
+            }
+            set
+            {
+                this["DiscoveryPairingToken"] = value;
+            }
+        }
     }
 }

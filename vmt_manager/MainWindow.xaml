@@ -820,6 +820,26 @@ If you want to override button, axis, fingers by VMT, Please set "Target device"
 							<TextBox Name="DriverPortTextBox"  Margin="1"  Text="39570"/>
 						</DockPanel>
 						<Button Click="IPAddressChangeButton" Content="Change" DockPanel.Dock="Top" Margin="1" />
+						<GroupBox Header="fitra-cam discovery" DockPanel.Dock="Top" Margin="1">
+							<DockPanel LastChildFill="True">
+								<DockPanel LastChildFill="True" DockPanel.Dock="Top">
+									<TextBlock DockPanel.Dock="Left" Margin="2">Selected:</TextBlock>
+									<TextBlock Name="DiscoverySelectedTextBlock" Text="(none)" Margin="2" Foreground="Gray"/>
+								</DockPanel>
+								<DockPanel LastChildFill="True" DockPanel.Dock="Top">
+									<TextBlock DockPanel.Dock="Left" Margin="2">Pairing token:</TextBlock>
+									<Button DockPanel.Dock="Right" Content="Apply" Click="ApplyDiscoveryTokenButton" Margin="1" Padding="8,0"/>
+									<TextBox Name="PairingTokenTextBox" Margin="1"/>
+								</DockPanel>
+								<DockPanel LastChildFill="True" DockPanel.Dock="Top">
+									<TextBlock DockPanel.Dock="Left" Margin="2">Pinned peer id:</TextBlock>
+									<Button DockPanel.Dock="Right" Content="Clear" Click="ClearDiscoveryPinButton" Margin="1" Padding="8,0"/>
+									<Button DockPanel.Dock="Right" Content="Pin selected" Click="PinSelectedDiscoveryPeerButton" Margin="1" Padding="8,0"/>
+									<TextBox Name="PinnedPeerIdTextBox" Margin="1"/>
+								</DockPanel>
+								<ListBox Name="DiscoveryPeersListBox" Height="120" Margin="1" FontFamily="Consolas"/>
+							</DockPanel>
+						</GroupBox>
 						<TextBlock FontWeight="Bold" TextWrapping="Wrap">
 							CAUTION: This change is affect to OSC communications ONLY. <LineBreak/>
 							<LineBreak/>
