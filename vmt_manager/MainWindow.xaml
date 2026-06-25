@@ -837,7 +837,7 @@ If you want to override button, axis, fingers by VMT, Please set "Target device"
 									<Button DockPanel.Dock="Right" Content="Pin selected" Click="PinSelectedDiscoveryPeerButton" Margin="1" Padding="8,0"/>
 									<TextBox Name="PinnedPeerIdTextBox" Margin="1"/>
 								</DockPanel>
-								<ListBox Name="DiscoveryPeersListBox" Height="120" Margin="1" FontFamily="Consolas"/>
+								<ListBox Name="DiscoveryPeersListBox" Height="120" Margin="1" FontFamily="Consolas" SelectionChanged="DiscoveryPeersListBox_SelectionChanged"/>
 							</DockPanel>
 						</GroupBox>
 						<TextBlock FontWeight="Bold" TextWrapping="Wrap">

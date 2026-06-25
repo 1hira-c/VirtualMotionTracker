@@ -101,6 +101,7 @@ namespace vmt_manager
         private string pairingToken;
         private string pinnedPeerId;
         private string selectedEndpointKey;
+        private bool hasEverSelectedPeer;
 
         public event Action<DiscoverySnapshot> SnapshotChanged;
         public event Action<DiscoveryPeer> SelectedPeerChanged;
@@ -131,6 +132,17 @@ namespace vmt_manager
                 lock (gate)
                 {
                     return !string.IsNullOrEmpty(selectedEndpointKey);
+                }
+            }
+        }
+
+        public bool HasEverSelectedPeer
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return hasEverSelectedPeer;
                 }
             }
         }
@@ -306,6 +318,11 @@ namespace vmt_manager
         {
             lock (gate)
             {
+                if (!string.IsNullOrEmpty(pairingToken) && announce.PairingToken != pairingToken)
+                {
+                    return;
+                }
+
                 peers[announce.InstanceId] = new DiscoveryPeer
                 {
                     InstanceId = announce.InstanceId,
@@ -333,6 +350,10 @@ namespace vmt_manager
                 string newKey = selectedPeer == null ? null : EndpointKey(selectedPeer);
                 selectedChanged = forceSelectedEvent || selectedEndpointKey != newKey;
                 selectedEndpointKey = newKey;
+                if (selectedPeer != null)
+                {
+                    hasEverSelectedPeer = true;
+                }
 
                 snapshot = new DiscoverySnapshot(
                     peers.Values.Select(p => p.Clone()).OrderBy(p => p.InstanceId, StringComparer.Ordinal).ToList(),

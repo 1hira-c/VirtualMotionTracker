@@ -77,6 +77,8 @@ namespace vmt_manager
         private readonly Stopwatch hmdPoseStopwatch = Stopwatch.StartNew();
         private ZeroconfDiscovery zeroconfDiscovery;
         private List<DiscoveryPeer> discoveryPeers = new List<DiscoveryPeer>();
+        private string selectedDiscoveryPeerId = null;
+        private bool updatingDiscoveryPeerList = false;
 
         // Phase 15.5 #2 fix: SteamVR が後から起動した場合のためのリトライ初期化用
         private DispatcherTimer openVRRetryTimer;
@@ -954,32 +956,53 @@ namespace vmt_manager
         {
             this.Dispatcher.BeginInvoke(new Action(() =>
             {
+                string peerIdToRestore = selectedDiscoveryPeerId;
+                if (string.IsNullOrEmpty(peerIdToRestore)
+                    && DiscoveryPeersListBox != null
+                    && DiscoveryPeersListBox.SelectedIndex >= 0
+                    && DiscoveryPeersListBox.SelectedIndex < discoveryPeers.Count)
+                {
+                    peerIdToRestore = discoveryPeers[DiscoveryPeersListBox.SelectedIndex].InstanceId;
+                }
+
                 discoveryPeers = new List<DiscoveryPeer>(snapshot.Peers);
 
                 if (DiscoveryPeersListBox != null)
                 {
-                    int selectedIndex = DiscoveryPeersListBox.SelectedIndex;
-                    DiscoveryPeersListBox.Items.Clear();
-                    foreach (var peer in discoveryPeers)
+                    updatingDiscoveryPeerList = true;
+                    try
                     {
-                        TimeSpan age = snapshot.NowUtc - peer.LastSeenUtc;
-                        bool live = age <= snapshot.PeerTimeout;
-                        string selectedMark = snapshot.SelectedPeer != null && snapshot.SelectedPeer.InstanceId == peer.InstanceId ? "* " : "  ";
-                        string state = live ? "LIVE" : "STALE";
-                        string name = string.IsNullOrWhiteSpace(peer.InstanceName) ? "(unnamed)" : peer.InstanceName;
-                        DiscoveryPeersListBox.Items.Add(string.Format(
-                            "{0}{1} {2} {3}:{4} age={5:0.0}s id={6}",
-                            selectedMark,
-                            state,
-                            name,
-                            peer.Address,
-                            peer.OscRecvPort,
-                            age.TotalSeconds,
-                            peer.InstanceId));
+                        DiscoveryPeersListBox.Items.Clear();
+                        int restoreIndex = -1;
+                        for (int i = 0; i < discoveryPeers.Count; i++)
+                        {
+                            var peer = discoveryPeers[i];
+                            TimeSpan age = snapshot.NowUtc - peer.LastSeenUtc;
+                            bool live = age <= snapshot.PeerTimeout;
+                            string selectedMark = snapshot.SelectedPeer != null && snapshot.SelectedPeer.InstanceId == peer.InstanceId ? "* " : "  ";
+                            string state = live ? "LIVE" : "STALE";
+                            string name = string.IsNullOrWhiteSpace(peer.InstanceName) ? "(unnamed)" : peer.InstanceName;
+                            DiscoveryPeersListBox.Items.Add(string.Format(
+                                "{0}{1} {2} {3}:{4} age={5:0.0}s id={6}",
+                                selectedMark,
+                                state,
+                                name,
+                                peer.Address,
+                                peer.OscRecvPort,
+                                age.TotalSeconds,
+                                peer.InstanceId));
+
+                            if (peer.InstanceId == peerIdToRestore)
+                            {
+                                restoreIndex = i;
+                            }
+                        }
+                        DiscoveryPeersListBox.SelectedIndex = restoreIndex;
+                        selectedDiscoveryPeerId = restoreIndex >= 0 ? discoveryPeers[restoreIndex].InstanceId : null;
                     }
-                    if (selectedIndex >= 0 && selectedIndex < DiscoveryPeersListBox.Items.Count)
+                    finally
                     {
-                        DiscoveryPeersListBox.SelectedIndex = selectedIndex;
+                        updatingDiscoveryPeerList = false;
                     }
                 }
 
@@ -1005,7 +1028,8 @@ namespace vmt_manager
 
         private bool CanUseDriverJetsonFallback()
         {
-            if (zeroconfDiscovery != null && zeroconfDiscovery.HasSelectedPeer)
+            if (zeroconfDiscovery != null
+                && (zeroconfDiscovery.HasSelectedPeer || zeroconfDiscovery.HasEverSelectedPeer))
             {
                 return false;
             }
@@ -2788,18 +2812,29 @@ namespace vmt_manager
             }
         }
 
+        private void DiscoveryPeersListBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            if (updatingDiscoveryPeerList)
+            {
+                return;
+            }
+
+            int index = DiscoveryPeersListBox?.SelectedIndex ?? -1;
+            selectedDiscoveryPeerId = index >= 0 && index < discoveryPeers.Count
+                ? discoveryPeers[index].InstanceId
+                : null;
+        }
+
         private void PinSelectedDiscoveryPeerButton(object sender, RoutedEventArgs e)
         {
             try
             {
-                int index = DiscoveryPeersListBox?.SelectedIndex ?? -1;
-                if (index < 0 || index >= discoveryPeers.Count)
+                string peerId = selectedDiscoveryPeerId;
+                if (string.IsNullOrEmpty(peerId))
                 {
                     MessageBox.Show("No discovery peer selected.", title, MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
-
-                string peerId = discoveryPeers[index].InstanceId;
                 PinnedPeerIdTextBox.Text = peerId;
                 Properties.Settings.Default.DiscoveryPinnedPeerId = peerId;
                 Properties.Settings.Default.Save();
